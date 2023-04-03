@@ -1,0 +1,51 @@
+/**
+ * Created by daeunextier_je.lee on 2022-12-27.
+ */
+
+.THIS .dataTable{
+    height : 550px;
+}
+
+.THIS .bold {
+    font-weight : bold;
+}
+
+.THIS .totalAmt {
+    margin : 0px !important;
+    padding-bottom : 0px !important;
+}
+.THIS .totalCnt {
+    margin : 0px !important;
+    padding-bottom : 0px !important;
+}
+
+.THIS .invalidMsg {
+    padding: 0 0 3px 8px;
+    color : red;
+}
+
+.THIS .summaryBox input {
+    width : 80%;
+}
+
+.THIS .slds-form-element__help {
+    display : none;
+}
+
+.THIS .slds-has-error, .THIS .slds-input {
+    --slds-c-input-shadow : none !important;
+    --slds-c-input-color-border : var(--lwc-borderWidthThin,1px) solid var(--slds-c-input-color-border, var(--sds-c-input-color-border, var(--slds-g-color-border-base-4, var(--lwc-colorBorderInput,rgb(201, 201, 201)))));
+    --slds-c-input-color-background : none !important;
+}
+
+.THIS .uploadBox .slds-form-element__control {
+    display : inline-block !important;
+}
+
+.THIS .slds-form-element__label {
+    width : 33%;
+}
+
+.THIS .slds-input__icon{
+   display:none;
+}

@@ -1,0 +1,363 @@
+<!--
+* ==================================================================================
+*   File Name   : InstantPaymentBulk.cmp
+*   Author      : je.lee
+*   Date        : 2022.12.26
+*   Description : 현재 후원자의 후원금을 조회해 선택 건에 대해 통합 즉시 결제 처리한다.
+                  결제 금액은 선택 후원금의 합산으로 가져간다.
+*   Modification Log
+* ==================================================================================
+*   Ver     Date          Author          Modification    Description
+* ==================================================================================
+*   1.0     2022.12.26    je.lee          Create
+* ==================================================================================
+-->
+<aura:component description="InstantPaymentBulk"
+                controller ="InstantPaymentBulkController"
+                implements ="force:hasRecordId,force:lightningQuickActionWithoutHeader">
+    <!-- Param Attribute -->
+    <aura:attribute name="CommonConfirm" type="Aura.Component" />
+
+    <aura:handler name="init"   value="{!this}" action="{!c.fnInit}" />
+    <aura:handler name="change" value="{!v.selectedPayment}" action="{!c.fnValidCheck}" />
+
+    <!-- String Variable -->
+    <aura:attribute name="currentStep"          type="String"  default="1"   description="현재 진행 단계 (1 :  후원금 선택 / 2 :  결제수단 선택 및 결제 진행)"/>
+    <aura:attribute name="selectedTabId"        type="String"  default="카드" description="선택된 결제수단 Tab Id (결제수단 유형 값을 사용함 - 카드/은행계좌)"/>
+    <aura:attribute name="selectedPaymentId"    type="String"  description="선택된 결제수단(PaymentType__c) 레코드 Id"/>
+    <aura:attribute name="documentId"           type="String"  description="동의자료 ContentDocumentId"/>
+    <aura:attribute name="cmsAccountKey"        type="String"  description="현재 후원자의 cms 등록된 계좌정보 (format : {은행코드 + 계좌번호})"/>
+
+    <!-- Array Variable -->
+    <aura:attribute name="selectedPayment"      type="Object"  default="{}"  description="선택된 결제수단" />
+    <aura:attribute name="opportunityList"      type="List"    default="[]"  description="현재 후원자의 후원금 목록" />
+    <aura:attribute name="totalOpportunityList" type="List"    default="[]"  description="현재 후원자의 후원금 목록(전체)" />
+    <aura:attribute name="selectionIds"         type="List"    default="[]"  description="선택된 후원금 Id 목록" />
+    <aura:attribute name="columns"              type="List"    default="[]"  description="후원금 lightning:datatable 컬럼"/>
+    <aura:attribute name="paymentOptions"       type="List"    default="[]"  description="좌측 lighting:radioGroup 내 사용자 결제수단 옵션 목록"/>
+    <aura:attribute name="bankOptions"          type="List"    default="[]"  description="CMS 즉시출금 사용 가능 은행 목록"/>
+    <aura:attribute name="invalidRequires"      type="List"    default="[]"  description="선택된 결제수단 내 누락 필드 목록"/>
+    <aura:attribute name="invalidFormats"       type="List"    default="[]"  description="선택된 결제수단 내 형식 오류 필드 목록"/>
+    <aura:attribute name="fileTypes"            type="List"    default="['.jpg','.jpeg','.png','.gif','.tif','.tiff','.pdf','.wav','.mp3','.wma','.der']" />
+
+    <!-- Boolean Variable -->
+    <aura:attribute name="isLoading"            type="Boolean" default="true"  description="lightning:spinner 활성화 여부"/>
+    <aura:attribute name="isCmsRegistered"      type="Boolean" default="false" description="해당 후원자의 효성 CMS 회원 등록 여부"/>
+    <aura:attribute name="isPaymentInvalid"     type="Boolean" default="true"  description="결제 불가능한 상태일 경우 true (ex : 선행 단계(빌키발급, 회원등록) 미수행)"/>
+    <aura:attribute name="isPrecedingInvalid"   type="Boolean" default="true"  description="필드 누락, 입력 오류 등으로 선행 단계(빌키발급, 회원등록)를 수행할 수 없는 경우 true"/>
+    <aura:attribute name="isAccountPaymentUser" type="Boolean" default="false" description="은행계좌 즉시결제 이용 가능한 사용자인지 여부. 현재(2023.01.27)는 시스템 어드민, 재무팀만 사용 가능하다." />
+    <aura:attribute name="isIsCmsAgreement"     type="Boolean" default="true"  access="private" description="효성 cms 동의자료 여부 / 고정값으로 변경할 수 없다" />
+
+    <!-- Integer Variable -->
+    <aura:attribute name="totalAmt"  type="Integer" default="0"  description="선택된 후원금 총액"/>
+    <aura:attribute name="totalCnt"  type="Integer" default="0"  description="선택된 후원금 개수"/>
+
+    <!-- Date Variable -->
+    <aura:attribute name="dateStart" type="Date"    description="조회 시작일"/>
+    <aura:attribute name="dateEnd"   type="Date"    description="조회 종료일"/>
+
+    <!-- Contents -->
+    <aura:html tag="style">
+        .cuf-content {
+            padding: 0 0rem !important;
+        }
+
+        .slds-p-around--medium {
+            padding: 0rem !important;
+        }
+
+        .slds-modal__content {
+            height: unset !important;
+            overflow-y: hidden !important;
+            max-height: unset  !important;
+        }
+
+        .invalidMsg {
+            padding-left : 8px;
+            color : red;
+        }
+
+        @media all and (min-width: 48em) {
+            .slds-modal__container {
+                width: {!if(equals(v.currentStep, '1') || equals(v.currentStep, '1-2'), '60% !important;', '50% !important;')};
+                height: 110% !important;
+                max-width: none;
+                min-width: 30rem;
+            }
+        }
+
+    </aura:html>
+
+    <aura:if isTrue="{!v.isLoading}">
+        <lightning:spinner aura:id="spinner" alternativeText="Loading" size="large" variant="brand" />
+    </aura:if>
+
+    <div aura:id="modalContainer">
+
+        <!-- Modal Header -->
+        <header class="modal-header slds-modal__header">
+            <h2 id="modal-heading-id" class="slds-text-heading_medium slds-hyphenate">
+                후원금 일괄 즉시결제
+            </h2>
+        </header>
+
+        <!-- Modal Body -->
+        <div class="slds-modal__content slds-p-around_medium" id="modal-content-id-1" >
+
+            <!-- 공통 출력 -->
+            <div class="slds-box" >
+                <div class="slds-m-horizontal_medium slds-align_absolute-center">
+                    <lightning:input type="number" label="선택 후원금 건수" value="{!v.totalCnt}" variant="label-inline" disabled="true" class="slds-size_1-of-2 totalCnt summaryBox"/>
+                    <lightning:input type="number" label="선택 후원금 총액" value="{!v.totalAmt}" variant="label-inline" disabled="true" class="slds-size_1-of-2 totalAmt summaryBox"/>
+                </div>
+
+                <!-- 조회 일자 (금일 기준 1년) -->
+                <aura:if isTrue="{!equals(v.currentStep, '1')}">
+                    <div class="slds-m-horizontal_medium  slds-align_absolute-center">
+                        <lightning:input type="date" label="조회 시작 일" value="{!v.dateStart}" max="{!v.dateEnd}"   variant="label-inline" class="slds-size_1-of-2 totalCnt summaryBox" hideLabel="true"/>
+                        <lightning:input type="date" label="조회 종료 일" value="{!v.dateEnd}"   min="{!v.dateStart}" variant="label-inline" class="slds-size_1-of-2 totalAmt summaryBox" hideLabel="true"/>
+                    </div>
+                    <div align="right">
+                        <lightning:button label="조회" onclick="{!c.fnInquiryDate}"  variant="brand"/>
+                    </div>
+                </aura:if>
+            </div>
+
+            <!-- Step 1. 일괄 결제할 후원금 선택 화면 -->
+            <aura:if isTrue="{!or(equals(v.currentStep, '1'), equals(v.currentStep, '1-2') )}" >
+                <div class="slds-p-around_medium dataTable">
+                    <lightning:datatable aura:id="opptyTable"
+                                         data="{!v.opportunityList}"
+                                         columns="{!v.columns}"
+                                         selectedRows="{!v.selectionIds}"
+                                         onrowselection="{!c.handleOpportunitySelect}"
+                                         showRowNumberColumn="true"
+                                         keyField="Id" />
+                </div>
+            </aura:if>
+
+            <!-- Step 2. 결제수단 선택 화면 -->
+            <aura:if isTrue="{!equals(v.currentStep, '2')}">
+                <div class="slds-m-horizontal_medium slds-m-top_medium">
+
+                    <lightning:layout multipleRows="false">
+                        <lightning:layoutItem size="4" padding="small" class="slds-box leftBox">
+                            <div class="tabLayout-sld">
+                                <lightning:tabset selectedTabId="{!v.selectedTabId}">
+                                    <lightning:tab label="카드" id="카드" onactive="{!c.handleTabActive}">
+                                        <!-- 카드 탭 :   회원의 카드 리스트 -->
+                                        <lightning:radioGroup name="cardGroup"
+                                                              label="카드 결제수단 목록"
+                                                              variant="label-hidden"
+                                                              options="{! v.paymentOptions }"
+                                                              value="{! v.selectedPaymentId }"
+                                                              onchange="{!c.handlePaymentSelected}"
+                                                              type="radio"/>
+                                    </lightning:tab>
+                                    <aura:if isTrue="{!v.isAccountPaymentUser}">
+                                        <!-- 계좌 탭 :     회원의 은행계좌 리스트-->
+                                        <lightning:tab label="은행계좌" id="은행계좌" onactive="{!c.handleTabActive}">
+                                            <lightning:radioGroup name="accountGroup"
+                                                                  label="은행계좌 결제수단 목록"
+                                                                  variant="label-hidden"
+                                                                  options="{! v.paymentOptions }"
+                                                                  value="{! v.selectedPaymentId }"
+                                                                  onchange="{!c.handlePaymentSelected}"
+                                                                  type="radio"/>
+                                        </lightning:tab>
+                                    </aura:if>
+                                </lightning:tabset>
+
+                                <!-- Validation Message -->
+                                <aura:if isTrue="{!!empty(v.paymentOptions)}">
+                                    <aura:if isTrue="{!!empty(v.invalidRequires)}">
+                                        <div>
+                                            <!-- 입력 누락된 필수 필드 목록 출력-->
+                                            <p class="invalidMsg bold" > * 아래 항목은 필수 입력 대상입니다. </p>
+                                            <aura:iteration items="{!v.invalidRequires}" var="field">
+                                                <li class="invalidMsg" >{!field}</li>
+                                            </aura:iteration>
+                                            <br/>
+                                        </div>
+                                    </aura:if>
+                                    <aura:if isTrue="{!!empty(v.invalidFormats)}">
+                                        <div>
+                                            <!-- 입력 형식 오류 메시지 출력 -->
+                                            <p class="invalidMsg bold" > * 입력 형식을 확인해주세요. </p>
+                                            <aura:iteration items="{!v.invalidFormats}" var="field">
+                                                <li class="invalidMsg" >{!field}</li>
+                                            </aura:iteration>
+                                            <br/>
+                                        </div>
+                                    </aura:if>
+                                </aura:if>
+                            </div>
+                        </lightning:layoutItem>
+
+                        <!-- 선택한 결제수단의 상세정보 출력 -->
+                        <lightning:layoutItem size="8" padding="small" class="slds-m-left_medium slds-p-right_medium">
+
+                            <div class="slds-box">
+                                <!-- 결제수단이 '카드'인 경우 출력 -->
+                                <aura:if isTrue="{!equals(v.selectedTabId, '카드')}">
+                                    <lightning:input label="결제수단 명"
+                                                     variant="label-inline"
+                                                     disabled="true"
+                                                     value="{!v.selectedPayment.Name}"/>
+                                    <lightning:input label="결제금액"
+                                                     aura:id="requireField"
+                                                     name="totalAmt"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     disabled="true"
+                                                     type="number"
+                                                     value="{!v.totalAmt}"/>
+
+                                    <lightning:input label="카드소유자 명"
+                                                     aura:id="requireField"
+                                                     name="cardAccountOwner"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     placeholder="ex) 김철수"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.CreditCardOwner__c}"/>
+
+                                    <lightning:input label="생년월일/사업자등록번호"
+                                                     aura:id="requireField"
+                                                     name="cardConfirmInfo"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     placeholder="ex) YYMMDD OR 0000000000"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.ConfirmInfo__c}"/>
+
+                                    <lightning:input label="카드번호"
+                                                     aura:id="requireField"
+                                                     name="cardNumber"
+                                                     variant="label-inline"
+                                                     placeholder="ex) 00000000000000"
+                                                     required="true"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.Secure_AccountNo__c }"/>
+
+                                    <lightning:input label="카드 유효기간"
+                                                     aura:id="requireField"
+                                                     name="CardExpiryDate__c"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     placeholder="ex) YYYY-MM"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.CardExpiryDate__c}"/>
+
+                                    <lightning:input label="카드 빌키"
+                                                     aura:id="requireField"
+                                                     name="BillKey__c"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     disabled="true"
+                                                     value="{!v.selectedPayment.BillKey__c}"/>
+                                </aura:if>
+
+                                <!-- 결제수단이 '은행계좌'인 경우 출력 -->
+                                <aura:if isTrue="{!equals(v.selectedTabId, '은행계좌')}">
+
+                                    <lightning:input label="결제수단 명"
+                                                     disabled="true"
+                                                     variant="label-inline"
+                                                     value="{!v.selectedPayment.Name}"/>
+
+                                    <lightning:input label="결제금액"
+                                                     aura:id="requireField"
+                                                     name="totalAmt"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     disabled="true"
+                                                     value="{!v.totalAmt}"/>
+
+                                    <lightning:input label="예금주"
+                                                     aura:id="requireField"
+                                                     name="bankAccountOwner"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     placeholder="ex) 김철수"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.CreditCardOwner__c}"/>
+
+                                    <lightning:input label="생년월일/사업자등록번호"
+                                                     aura:id="requireField"
+                                                     name="bankConfirmInfo"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     placeholder="ex) YYMMDD OR 0000000000"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.ConfirmInfo__c}"/>
+
+                                    <lightning:input label="계좌번호"
+                                                     aura:id="requireField"
+                                                     name="bankAccountNumber"
+                                                     variant="label-inline"
+                                                     required="true"
+                                                     placeholder="ex) 00000000000000"
+                                                     disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                     value="{!v.selectedPayment.Secure_AccountNo__c }"/>
+
+                                    <lightning:combobox label="은행사"
+                                                        aura:id="requireField"
+                                                        name="bankAccountName"
+                                                        variant="label-inline"
+                                                        required="true"
+                                                        disabled="{!or(!v.isPaymentInvalid, notequals(v.selectedPaymentId, '직접입력'))}"
+                                                        value="{!v.selectedPayment.BankAccountCode__c}"
+                                                        options="{!v.bankOptions}"
+                                                        dropdownAlignment="auto"
+                                                        placeholder="{!v.selectedPayment.BankAccountName__r.Name}"/>
+
+                                    <lightning:fileUpload label="동의자료 업로드"
+                                                          aura:id="requireField"
+                                                          name="agreement"
+                                                          multiple="false"
+                                                          accept="{!v.fileTypes}"
+                                                          recordId="{!v.recordId}"
+                                                          disabled="{!!v.isPaymentInvalid}"
+                                                          onuploadfinished="{!c.handleUploadFinished}"
+                                                          class="uploadBox"/>
+
+                                </aura:if>
+                            </div>
+                        </lightning:layoutItem>
+                    </lightning:layout>
+                </div>
+            </aura:if>
+        </div>
+
+        <!-- Modal Footer -->
+        <footer class="slds-modal__footer">
+            <!-- 후원금 선택 화면 -->
+            <aura:if isTrue="{!or(equals(v.currentStep, '1'), equals(v.currentStep, '1-2') )}" >
+                <lightning:button label="취소" onclick="{!c.fnClose}" />
+                <lightning:button label="다음" onclick="{!c.fnNext}" variant="brand" disabled="{!or(lessthanorequal(v.totalAmt, 0), lessthanorequal(v.totalCnt, 0))}"/>
+            </aura:if>
+            <!-- 즉시결제 화면 -->
+            <aura:if isTrue="{!equals(v.currentStep, '2')}">
+                <lightning:button label="취소" onclick="{!c.fnClose}" />
+                <lightning:button label="이전" onclick="{!c.fnPrevious}" />
+                <!--
+                * 결제 전 필수 선행 단계
+                * 카드일 경우 : 빌키 생성
+                * 은행계좌일 경우 : 회원등록
+                -->
+                <aura:if isTrue="{!equals(v.selectedTabId, '카드')}">
+                    <lightning:button label="빌키생성" onclick="{!c.fnGenerateBillKey}" disabled="{!v.isPrecedingInvalid}" variant="brand"/>
+                </aura:if>
+                <aura:if isTrue="{!equals(v.selectedTabId, '은행계좌')}">
+                    <lightning:button label="회원등록" onclick="{!c.fnCmsRegister}" disabled="{!v.isPrecedingInvalid}" variant="brand"/>
+                </aura:if>
+                <lightning:button label="결제" onclick="{!c.fnBeforePayConfirm}" disabled="{!v.isPaymentInvalid}" variant="brand"/>
+<!--                <lightning:button label="결제" onclick="{!c.fnPayment}" disabled="{!v.isPaymentInvalid}" variant="brand"/>-->
+            </aura:if>
+        </footer>
+    </div>
+    <!-- Create confirm modal -->
+    {!v.CommonConfirm}
+
+</aura:component>
